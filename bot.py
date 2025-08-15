@@ -6,6 +6,7 @@ import instaloader
 import logging
 import time
 import signal
+import random
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -20,6 +21,8 @@ logger = logging.getLogger(__name__)
 # Загружаем переменные окружения
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+INSTA_USERNAME = os.getenv('INSTAGRAM_USERNAME')
+INSTA_PASSWORD = os.getenv('INSTAGRAM_PASSWORD')
 
 if not TOKEN:
     raise ValueError("❌ Токен бота не найден! Создайте .env файл с TELEGRAM_BOT_TOKEN")
@@ -32,16 +35,39 @@ class InstagramDownloader:
             download_videos=False,
             save_metadata=False,
             compress_json=False,
-            sleep=True,  # Добавляем задержки между запросами
-            quiet=True
+            sleep=True,
+            quiet=True,
+            request_timeout=120  # Увеличиваем таймаут запросов
         )
+        
+        # Случайный User-Agent для каждого экземпляра
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+        ]
         
         # Настройка пользовательского агента
         self.L.context._session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': random.choice(user_agents),
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'DNT': '1'
         })
         
-        self.request_delay = 3  # Задержка между запросами в секундах
+        # Аутентификация в Instagram
+        if INSTA_USERNAME and INSTA_PASSWORD:
+            try:
+                self.L.login(INSTA_USERNAME, INSTA_PASSWORD)
+                logger.info("✅ Успешная аутентификация в Instagram")
+            except Exception as e:
+                logger.error(f"❌ Ошибка аутентификации в Instagram: {e}")
+        else:
+            logger.warning("⚠️ Учетные данные Instagram не предоставлены. Работаем без аутентификации")
+        
+        self.request_delay = 5  # Увеличили задержку между запросами
+        self.max_retries = 3    # Максимальное количество попыток
 
     async def download_media(self, url: str, update: Update):
         """Основная функция загрузки медиа"""
@@ -53,7 +79,17 @@ class InstagramDownloader:
 
             # Создаем временную папку
             with tempfile.TemporaryDirectory() as temp_dir:
-                post = instaloader.Post.from_shortcode(self.L.context, shortcode)
+                retry_count = 0
+                while retry_count < self.max_retries:
+                    try:
+                        post = instaloader.Post.from_shortcode(self.L.context, shortcode)
+                        break
+                    except instaloader.exceptions.QueryReturnedBadRequestException as e:
+                        retry_count += 1
+                        if retry_count >= self.max_retries:
+                            raise
+                        logger.warning(f"🔄 Повторная попытка {retry_count}/{self.max_retries} после ошибки: {e}")
+                        time.sleep(2 ** retry_count)  # Экспоненциальная задержка
                 
                 # Проверяем приватный аккаунт
                 if post.owner_profile.is_private:
@@ -70,7 +106,7 @@ class InstagramDownloader:
                         f"{idx}/{len(media_items)}"
                     )
                     results.append(result)
-                    time.sleep(self.request_delay)  # Задержка между медиа
+                    time.sleep(self.request_delay + random.uniform(0, 1))  # Случайная задержка
 
                 return "✅ Скачивание завершено!" if all(results) else "⚠️ Возникли ошибки при скачивании некоторых медиа"
 
@@ -119,8 +155,18 @@ class InstagramDownloader:
             file_path = os.path.join(temp_dir, f"media_{counter.replace('/', '_')}{ext}")
             
             # Скачиваем файл
-            response = requests.get(media_url, stream=True, timeout=60)
-            response.raise_for_status()
+            retry_count = 0
+            while retry_count < self.max_retries:
+                try:
+                    response = requests.get(media_url, stream=True, timeout=60)
+                    response.raise_for_status()
+                    break
+                except requests.exceptions.RequestException as e:
+                    retry_count += 1
+                    if retry_count >= self.max_retries:
+                        raise
+                    logger.warning(f"🔄 Повторная попытка скачивания {retry_count}/{self.max_retries}")
+                    time.sleep(1 + retry_count)
             
             # Проверяем размер файла (макс. 50MB)
             file_size = int(response.headers.get('content-length', 0))
@@ -134,10 +180,9 @@ class InstagramDownloader:
             
             # Скачиваем файл
             with open(file_path, 'wb') as f:
-                downloaded = 0
                 for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    downloaded += len(chunk)
+                    if chunk:  # фильтруем keep-alive пакеты
+                        f.write(chunk)
             
             # Отправляем в Telegram
             if media_type == 'video':
@@ -145,15 +190,17 @@ class InstagramDownloader:
                     video=open(file_path, 'rb'),
                     supports_streaming=True,
                     caption=f"Видео {counter}",
-                    read_timeout=60,
-                    write_timeout=60
+                    read_timeout=120,
+                    write_timeout=120,
+                    connect_timeout=120
                 )
             else:
                 await update.message.reply_photo(
                     photo=open(file_path, 'rb'),
                     caption=f"Фото {counter}",
-                    read_timeout=60,
-                    write_timeout=60
+                    read_timeout=120,
+                    write_timeout=120,
+                    connect_timeout=120
                 )
                 
             return True
