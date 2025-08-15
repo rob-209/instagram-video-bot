@@ -1,4 +1,4 @@
-telebot==0.7.0  # Или aiogram, если используешь
+python-telegram-bot==20.3
+instaloader==4.10.1
+python-dotenv==1.0.0
 requests==2.31.0
-instaloader==4.10.0  # Для скачивания из Instagram
-python-dotenv==1.0.0  # Для загрузки .env
