@@ -1,0 +1,13 @@
+services:
+  - type: worker  # Background Worker для Long Polling
+    name: instagram-bot
+    env: python
+    region: frankfurt  # Выберите ближайший регион
+    buildCommand: |
+        apt-get update
+        apt-get install -y ffmpeg
+        pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: ${TELEGRAM_BOT_TOKEN}
