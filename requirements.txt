@@ -1,0 +1,4 @@
+telebot==0.7.0  # Или aiogram, если используешь
+requests==2.31.0
+instaloader==4.10.0  # Для скачивания из Instagram
+python-dotenv==1.0.0  # Для загрузки .env
