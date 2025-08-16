@@ -69,7 +69,7 @@ class InstagramDownloader:
         self.request_delay = 5  # Увеличили задержку между запросами
         self.max_retries = 3    # Максимальное количество попыток
 
-    async def download_media(self, url: str, update: Update):
+        async def download_media(self, url: str, update: Update):
         """Основная функция загрузки медиа"""
         try:
             # Извлекаем shortcode
@@ -80,21 +80,31 @@ class InstagramDownloader:
             # Создаем временную папку
             with tempfile.TemporaryDirectory() as temp_dir:
                 retry_count = 0
+                post = None
+
                 while retry_count < self.max_retries:
                     try:
                         post = instaloader.Post.from_shortcode(self.L.context, shortcode)
-                        break
+
+                        # Проверка: если профиль приватный и не авторизованы
+                        if post.owner_profile.is_private and not post.owner_profile.followed_by_viewer:
+                            profile_url = f"https://instagram.com/{post.owner_username}"
+                            return f"⚠️ Не могу скачать: аккаунт приватный.\nПрофиль: {profile_url}"
+
+                        break  # Всё ок, пост получен
+
                     except instaloader.exceptions.QueryReturnedBadRequestException as e:
                         retry_count += 1
                         if retry_count >= self.max_retries:
                             raise
                         logger.warning(f"🔄 Повторная попытка {retry_count}/{self.max_retries} после ошибки: {e}")
-                        time.sleep(2 ** retry_count)  # Экспоненциальная задержка
-                
-                # Проверяем приватный аккаунт
-                if post.owner_profile.is_private:
-                    return "❌ Не могу скачать: аккаунт приватный. Бот работает только с публичными профилями."
-                
+                        time.sleep(2 ** retry_count)
+
+                # Проверяем, что пост получен
+                if not post:
+                    return "❌ Не удалось получить пост."
+
+                # Получаем медиа
                 media_items = self._get_media_items(post)
                 if not media_items:
                     return "❌ Медиа не найдено"
@@ -102,17 +112,18 @@ class InstagramDownloader:
                 results = []
                 for idx, (media_type, media_url) in enumerate(media_items, 1):
                     result = await self._process_media(
-                        media_type, media_url, temp_dir, update, 
+                        media_type, media_url, temp_dir, update,
                         f"{idx}/{len(media_items)}"
                     )
                     results.append(result)
-                    time.sleep(self.request_delay + random.uniform(0, 1))  # Случайная задержка
+                    time.sleep(self.request_delay + random.uniform(0, 1))  # случайная задержка
 
-                return "✅ Скачивание завершено!" if all(results) else "⚠️ Возникли ошибки при скачивании некоторых медиа"
+                return "✅ Скачивание завершено!" if all(results) else "⚠️ Некоторые медиа не удалось скачать"
 
         except instaloader.exceptions.InstaloaderException as e:
             logger.error(f"Instaloader error: {e}")
             return f"❌ Ошибка Instagram: {str(e)}"
+
         except Exception as e:
             logger.exception("Unexpected error")
             return f"⚠️ Неожиданная ошибка: {str(e)}"
@@ -272,3 +283,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
